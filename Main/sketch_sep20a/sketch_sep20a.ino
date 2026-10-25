@@ -6,9 +6,7 @@
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-int Limit_Process = 2;                    // Limite de x processos Intermediarios
-int Total_Process = Limit_Process*2;      // Cada processo tem início/fim + Chegada + Saída
-int PC = 0;
+String responsavelID = "";
 
 void setup() {
 
@@ -19,6 +17,7 @@ void setup() {
 
   Serial.println("LOG|Sistema iniciado.");
   Serial.println("LOG|Aproxime a tag...");
+
 }
 
 void loop() {
@@ -26,16 +25,14 @@ void loop() {
   // ========================================
   // Verifica se existe uma nova tag
   // ========================================
-
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
     return;
   }
 
-  // ========================================
-  // Monta o ID da Tag
-  // ========================================
 
-  // Monta o ID da tag em formato Hexadecimal
+  // ========================================
+  // Monta o ID da Tag em formato Hexadecimal
+  // ========================================
   String tagID = "";
   for (byte i = 0; i < mfrc522.uid.size; i++) {
     tagID += String(mfrc522.uid.uidByte[i], HEX);
@@ -48,63 +45,84 @@ void loop() {
   // ========================================
   // Validando Se a TAG já existe no BD
   // ========================================
-  Serial.println("CONSULT|'" + tagID + "'");
+  Serial.println("CONSULT_TAG|'" + tagID + "'");
   while (Serial.available() == 0) {
     // Aguarda
   }
   int Resp_BD_A = Serial.parseInt();
 
-
   // Se não existe ela é criada
   if (Resp_BD_A == -1) {
-    Serial.println("INSERT|'" + tagID + "'|" + "WITH '" + Limit_Process + "' PROCESS");
-    Serial.println("LOG|Tag nova registrada.");
+    Serial.println("INSERT|'" + tagID + "'");
+    Serial.println("########################################");
+    Serial.println("LOG|Aproxime a tag...");
   } 
 
-  // Validar se a TAG esta Desativada
-  // else if{return;}
-  
 
+  // ========================================
+  // Processamento dos Lotes
+  // ========================================
   else {
-
     // Limpar dados antigos do Serial
     while (Serial.available() > 0) {
       Serial.read();
     }
 
-    // INCREMENTAR PROCESSO
-    Serial.println("UPDATE N_PROCESS|'" + tagID + "'");
+    // CONSULTAR PROCESSO
+    Serial.println("CONSULT MANUFACTURE_PROCESS|'" + tagID + "'");
     while (Serial.available() == 0) {
       // Aguarda resposta do Python
     }
-    int Resp_BD_B = Serial.parseInt();
-    Serial.print("Processo atual da " + tagID + ": ");
+    String Resp_BD_B = Serial.readStringUntil('\n');
+
     Serial.println(Resp_BD_B);
 
-    // Processo ímpar → novo estágio iniciado
-    if (Resp_BD_B % 2 == 1 && Resp_BD_B <= Total_Process){
-      Serial.println("Processo ímpar → novo estágio iniciado");
-      PC = Resp_BD_B/2 + 1;
-      Serial.print("UPDATE PROCESS '");
-      Serial.print(PC);
-      Serial.println("'|'" + tagID + "'");
+    int posM = Resp_BD_B.indexOf('M');
+    int posP = Resp_BD_B.indexOf('P');
+    int posMM = Resp_BD_B.indexOf("MM");
+    int posMP = Resp_BD_B.indexOf("MP");
 
+    int mafufatura = Resp_BD_B.substring(posM + 1, posP).toInt();
+    int processo = Resp_BD_B.substring(posP + 1, posMM).toInt();
+    int max_mafufatura = Resp_BD_B.substring(posMM + 2, posMP).toInt();
+    int max_processo = Resp_BD_B.substring(posMP + 2).toInt();
 
-    }
-    // Processo par → estágio finalizado
-    else if(Resp_BD_B % 2 == 0 && Resp_BD_B <= Total_Process){
-      Serial.println("Processo par → estágio finalizado");
-      PC = Resp_BD_B/2;
-      Serial.print("UPDATE PROCESS '");
-      Serial.print(PC);
-      Serial.println("'|'" + tagID + "'");
+    if(mafufatura < max_mafufatura){
+      if(mafufatura == 0){
+        chamar_responsavel();
+        Serial.println("UPDATE MANUFACTURE|'" + tagID + "'|'" + responsavelID + "'");
+        Serial.println("########################################");
+        Serial.println("LOG|Aproxime a tag...");
+      } else if(mafufatura%2 == 1){
+        // Manufatura ímpar → nova manufatura iniciada
 
-    }
-    // Processo finalizado → Desativando TAG
-    else {
-      Serial.println("Processo finalizado");
+        if(processo < max_processo){
+          chamar_responsavel();
+          Serial.println("UPDATE PROCESS|'" + tagID + "'|'" + responsavelID + "'");
+          Serial.println("########################################");
+          Serial.println("LOG|Aproxime a tag...");
+        } else {
+          chamar_responsavel();
+          Serial.println("UPDATE MANUFACTURE|'" + tagID + "'|'" + responsavelID + "'");
+          Serial.println("########################################");
+          Serial.println("LOG|Aproxime a tag...");
+        }
+        
+      } else if(mafufatura%2 == 0){
+        // Manufatura par → manufatura finalizada
+
+        chamar_responsavel();
+        Serial.println("UPDATE MANUFACTURE|'" + tagID + "'|'" + responsavelID + "'");
+        Serial.println("########################################");
+        Serial.println("LOG|Aproxime a tag...");
+      }
+    } else {
+      Serial.println("Produção finalizado");
       Serial.println("DEACTIVATE TAG|'" + tagID + "'");
+      Serial.println("########################################");
+      Serial.println("LOG|Aproxime a tag...");
     }
+    
   }
 
   // Finaliza comunicação com a tag
@@ -112,4 +130,38 @@ void loop() {
   mfrc522.PCD_StopCrypto1();
 
   delay(1000);
+}
+
+
+void chamar_responsavel() {
+  Serial.println("LOG|Informe o responsavel por essa tarefa: ");
+
+  int Resp_BD_C = 0;
+
+  do {
+    responsavelID = "";
+    while (responsavelID == "") {
+      if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+
+        // Monta o ID do cartão do responsável
+        for (byte i = 0; i < mfrc522.uid.size; i++) {
+          responsavelID += String(mfrc522.uid.uidByte[i], HEX);
+        }
+
+        // Finaliza a leitura do cartão
+        mfrc522.PICC_HaltA();
+        mfrc522.PCD_StopCrypto1();
+
+        delay(500);
+      }
+    }
+
+    // Consulta o responsável no banco de dados
+    Serial.println("CONSULT_USER|'" + responsavelID + "'");
+    while (Serial.available() == 0) {
+      // Aguarda resposta
+    }
+    Resp_BD_C = Serial.parseInt();
+
+  } while (Resp_BD_C != 1);
 }

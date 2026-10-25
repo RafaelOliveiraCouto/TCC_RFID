@@ -1,175 +1,328 @@
-import os
 from dotenv import load_dotenv
+from winrt.windows.devices.geolocation import (Geolocator, PositionAccuracy)
 
-load_dotenv("Secrets/bd.env")
-
-LINK_BD = os.getenv("LINK_BD")
-
+import os
 import serial
 import requests
 import json
 import time
+import asyncio
 
-# =========================
-# CONFIGURAÇÕES
-# =========================
+async def main():
+    # =========================
+    # CONFIGURAÇÕES
+    # =========================
 
-PORTA = "COM3"
-BAUDRATE = 9600
+    PORTA = "COM3"
+    BAUDRATE = 9600
 
-# =========================
-# CONEXÃO COM ARDUINO
-# =========================
+    # =========================
+    # CONEXÃO COM ARDUINO
+    # =========================
 
-arduino = serial.Serial(
-    PORTA,
-    BAUDRATE,
-    timeout=1
-)
+    arduino = serial.Serial(
+        PORTA,
+        BAUDRATE,
+        timeout=1
+    )
 
-# =========================
-# CONEXÃO COM FIREBASE
-# =========================
+    # =========================
+    # CONEXÃO COM FIREBASE
+    # =========================
 
-link = LINK_BD
+    load_dotenv("Secrets/bd.env")
+    LINK_BD = os.getenv("LINK_BD")
+    link = LINK_BD
 
-# =========================
-# LEITURA DA SERIAL
-# =========================
+    # =========================
+    # LEITURA DA SERIAL
+    # =========================
 
-while True:
+    while True:
 
-    linha = arduino.readline().decode("utf-8").strip()
+        linha = arduino.readline().decode("utf-8").strip()
 
-    if linha == "":
-        continue
+        if linha == "":
+            continue
 
-    print("Recebido:", linha)
+        print("Recebido:", linha)
 
-    # ========================================
-    # SELECT - CONSULTAR
-    # ========================================
+        # ========================================
+        # SELECT - CONSULTAR TAG
+        # ========================================
 
-    if linha.startswith("CONSULT"):
-        tagID = linha.split("'")[1]
+        if linha.startswith("CONSULT_TAG"):
+            tagID = linha.split("'")[1]
 
-        req = requests.get(f'{link}/TAGS.json')
+            req = requests.get(f'{link}/Lote.json')
 
-        if tagID in req.json():
-            arduino.write(b"1\n")
-        else:
-            print("TAG não encontrada.")
-            arduino.write(b"-1\n")
-
-
-    # ========================================
-    # INSERT - CADASTRAR
-    # ========================================
-
-    elif linha.startswith("INSERT"):
-        tagID = linha.split("'")[1]
-        Limit_Process = int(linha.split("'")[3])
-
-        print("TAG para cadastro:", tagID)
-
-        conteudo = input("Digite o nome do Produto: ")
+            if tagID in req.json():
+                arduino.write(b"1\n")
+            else:
+                arduino.write(b"-1\n")
 
 
-        contador = milissegundos = int(time.time() * 1000)
-        DADOS = {
-            'CONTEUDO': conteudo, 
-            'N_PROCESSO': 0,
-            'PROCESSO': {
-                '0' : {
-                    'CHEGADA': contador,
-                    'GEOLOCALIZACAO': 0,
+        # ========================================
+        # SELECT - CONSULTAR USER
+        # ========================================
+
+        if linha.startswith("CONSULT_USER"):
+            user_cardID = linha.split("'")[1]
+
+            req = requests.get(f'{link}/User.json')
+            dados = req.json()
+
+            if dados and any(
+                usuario.get("ID_Cartão") == user_cardID
+                for usuario in dados.values()
+                if isinstance(usuario, dict)
+            ):
+                print("Recebido: LOG|Usuario identificado")
+                arduino.write(b"1\n")
+            else:
+                print("Recebido: LOG|Usuario não identificado. Tente novamente!")
+                arduino.write(b"-1\n")
+
+
+        # ========================================
+        # INSERT - CADASTRAR
+        # ========================================
+
+        elif linha.startswith("INSERT"):
+            tagID = linha.split("'")[1]
+
+            ID_Produto = input("Digite ID do Produto: ")
+
+            req = requests.get(f'{link}/Produto/{ID_Produto}.json')
+            produto = req.json()
+
+            ### INFORMAÇÕES DO PRODUTO
+            nome = produto.get("Nome")
+            manufatura = produto.get("Estrutura", {}).get("Manufatura")
+            arry_nome_manufatura = produto.get("Estrutura", {}).get("Nome_Manufatura")
+            arry_processo = produto.get("Estrutura", {}).get("Processos")
+            arry_nome_processo = produto.get("Estrutura", {}).get("Nome_Processo")
+
+            contador = milissegundos = int(time.time() * 1000)
+            DADOS = {
+                'Nome': nome,
+                'Chegada': contador,
+                'Saida': 0,
+                'TAG_Ativa': True,
+                'Index_Manufatura': 1,
+                'N_Manufatura': 0,
+                'Manufatura': {}
+            }
+
+            for i in range(1, manufatura + 1):
+                DADOS['Manufatura'][str(i)] = {
+                    'Nome': arry_nome_manufatura[i-1],
+                    'Chegada': 0,
+                    'Responsavel': 0,
+                    'Saida': 0,
+                    'N_Processo': 0,
+                    'Geolocalização': 0,
+                    'Processo': {}
                 }
-            },
-            'ATIVO': True
-        }
+                for j in range(0, arry_processo[i-1]):
+                    DADOS['Manufatura'][str(i)]['Processo'][str(j+1)] = {
+                        'Nome': arry_nome_processo[i-1][j],
+                        'Chegada': 0,
+                        'Responsavel': 0,
+                        'Saida': 0,
+                        'Geolocalização': 0,
+                }
+            
 
-        for i in range(1, Limit_Process + 1):
-            DADOS['PROCESSO'][str(i)] = {
-                'CHEGADA': 0,
-                'SAIDA': 0,
-                'GEOLOCALIZACAO': 0,
-                'RESPONSAVEL' : 0,
-        }
-
-        req = requests.put(f"{link}/TAGS/{tagID}.json", data=json.dumps(DADOS))
+            req = requests.put(f"{link}/Lote/{tagID}.json", data=json.dumps(DADOS))
 
 
-    # ========================================
-    # UPDATE - N_PROCESS
-    # ========================================
+        # ========================================
+        # SELECT - CONSULTAR MANUFACTURE_PROCESS
+        # ========================================
 
-    elif linha.startswith("UPDATE N_PROCESS"):
-        tagID = linha.split("'")[1]
+        elif linha.startswith("CONSULT MANUFACTURE_PROCESS"):
+            tagID = linha.split("'")[1]
 
-        req = requests.get(f'{link}/TAGS/{tagID}/.json')
-        dados = req.json()
+            req = requests.get(f'{link}/Lote/{tagID}.json')
+            dados = req.json()
 
-        processo = dados.get("N_PROCESSO")
-        processo +=1
+            # Manufatura
+            n_manufatura = dados.get("N_Manufatura")
+            index_manufatura = dados.get("Index_Manufatura")
+            manufaturas = dados.get("Manufatura", [])
+            n_max_manufatura = (len(manufaturas) - 1) * 2
 
-        DADOS = {'N_PROCESSO': processo}
+            # Processo - Se Manufatura = 0
+            n_processo = manufaturas[index_manufatura].get("N_Processo")
+            processos = manufaturas[index_manufatura].get("Processo")
+            n_max_processo = (len(processos) - 1) * 2
 
-        req = requests.patch(f"{link}/TAGS/{tagID}/.json", data=json.dumps(DADOS))
+            
+            new_str = f"M{n_manufatura}P{n_processo}MM{n_max_manufatura}MP{n_max_processo}"
 
-        # Enviar o N_Process para o arduino
-        arduino.write(f"{processo}\n".encode())
-
-
-    # ========================================
-    # UPDATE - PROCESS X
-    # ========================================
-
-    elif linha.startswith("UPDATE PROCESS"):
-        tagID = linha.split("'")[3]
-        Prc = int(linha.split("'")[1])
+            # Enviar uma String para o arduino
+            arduino.write(f"{new_str}\n".encode())
 
 
-        req = requests.get(f'{link}/TAGS/{tagID}/.json')
-        dados = req.json()
-        processo = dados.get("N_PROCESSO")
+        # ========================================
+        # UPDATE - MANUFACTURE
+        # ========================================
 
+        elif linha.startswith("UPDATE MANUFACTURE"):
+            tagID = linha.split("'")[1]
+            user_cardID = linha.split("'")[3]
+            responsavel = ""
 
-        responsavel = input("Digite o responsavel pelo Produto: ")
-        contador = milissegundos = int(time.time() * 1000)
+            ### INFORMAÇÕES DO USUARIO
+            req = requests.get(f'{link}/User.json')
+            user = req.json()
+            for user_ID, dados in user.items():
+                if dados["ID_Cartão"] == user_cardID:
+                    responsavel = dados["Nome"]
+                    break
 
-        if processo%2 == 1:
-            DADOS = {
-                'CHEGADA': contador,
-                'GEOLOCALIZACAO': 0,
-                'RESPONSAVEL' : responsavel
+            ### INFORMAÇÕES DO LOTE
+            req = requests.get(f'{link}/Lote/{tagID}.json')
+            dados = req.json()
+
+            n_manufatura = dados.get("N_Manufatura")
+            n_manufatura +=1
+
+            ### INFORMAÇÕES DO TEMPORIZADOR
+            contador = milissegundos = int(time.time() * 1000)  
+
+            if n_manufatura%2 == 1:
+                index_manufatura = n_manufatura//2 + 1
+            if n_manufatura%2 == 0:
+                index_manufatura = n_manufatura//2
+            
+            DADOS_1 = {
+                'N_Manufatura': n_manufatura,
+                'Index_Manufatura': index_manufatura
             }
-        if processo%2 == 0:
-            DADOS = {
-                'SAIDA': contador,
-                'GEOLOCALIZACAO': 0,
-                'RESPONSAVEL' : responsavel
+
+            # Processo ímpar → novo estágio iniciado
+            if n_manufatura%2 == 1:
+                ### INFORMAÇÕES DA GEOLOCALIZAÇÃO
+                local = await obter_localizacao()  
+                DADOS_2 = {
+                    'Chegada': contador,
+                    'Geolocalização': local,
+                    'Responsavel': responsavel
+                }
+
+            # Processo par → estágio finalizado
+            if n_manufatura%2 == 0:
+                DADOS_2 = {
+                    'Saida': contador,
+                    'Responsavel': responsavel
+                }
+
+            req = requests.patch(f"{link}/Lote/{tagID}.json", data=json.dumps(DADOS_1))
+            req = requests.patch(f"{link}/Lote/{tagID}/Manufatura/{index_manufatura}.json", data=json.dumps(DADOS_2))
+
+
+        # ========================================
+        # UPDATE - PROCESS
+        # ========================================
+
+        elif linha.startswith("UPDATE PROCESS"):
+            tagID = linha.split("'")[1]
+            user_cardID = linha.split("'")[3]
+            responsavel = ""
+
+            ### INFORMAÇÕES DO USUARIO
+            req = requests.get(f'{link}/User.json')
+            user = req.json()
+            for user_ID, dados in user.items():
+                if dados["ID_Cartão"] == user_cardID:
+                    responsavel = dados["Nome"]
+                    break
+
+            ### INFORMAÇÕES DO LOTE
+            req = requests.get(f'{link}/Lote/{tagID}.json')
+            dados = req.json()
+
+            n_manufatura = dados.get("N_Manufatura")
+            index_manufatura = dados.get("Index_Manufatura")
+            manufaturas = dados.get("Manufatura", [])
+
+            n_processo = manufaturas[index_manufatura].get("N_Processo")
+            n_processo +=1
+
+            ### INFORMAÇÕES DO TEMPORIZADOR
+            contador = milissegundos = int(time.time() * 1000)  
+            
+            DADOS_1 = {
+                'N_Processo': n_processo
             }
 
-        req = requests.patch(f"{link}/TAGS/{tagID}/PROCESSO/{Prc}.json", data=json.dumps(DADOS))
+            # Processo ímpar → novo estágio iniciado
+            if n_processo%2 == 1:
+                ### INFORMAÇÕES DA GEOLOCALIZAÇÃO
+                local = await obter_localizacao() 
+                aux_p = n_processo//2 + 1
+                DADOS_2 = {
+                    'Chegada': contador,
+                    'Geolocalização': local,
+                    'Responsavel': responsavel
+                }
+
+            # Processo par → estágio finalizado
+            if n_processo%2 == 0:
+                aux_p = n_processo//2
+                DADOS_2 = {
+                    'Saida': contador,
+                    'Responsavel': responsavel
+                }
+
+            req = requests.patch(f"{link}/Lote/{tagID}/Manufatura/{index_manufatura}.json", data=json.dumps(DADOS_1))
+            req = requests.patch(f"{link}/Lote/{tagID}/Manufatura/{index_manufatura}/Processo/{aux_p}.json", data=json.dumps(DADOS_2))
 
 
-    # ========================================
-    # DELETE - DESATIVAR TAG
-    # ========================================
+        # ========================================
+        # DELETE - DESATIVAR TAG
+        # ========================================
 
-    elif linha.startswith("DEACTIVATE TAG"):
-        tagID = linha.split("'")[1]
-        contador = milissegundos = int(time.time() * 1000)
+        elif linha.startswith("DEACTIVATE TAG"):
+            tagID = linha.split("'")[1]
+            contador = milissegundos = int(time.time() * 1000)
 
-        DADOS1 = {
-            'ATIVO': False
-        }
+            DADOS = {
+                'Saida': contador,
+                'TAG_Ativa': False
+            }
 
-        DADOS2 = {
-            'SAIDA': contador,
-            'GEOLOCALIZACAO': 0
-        }
+            req = requests.patch(f"{link}/Lote/{tagID}.json", data=json.dumps(DADOS))
 
-        req = requests.patch(f"{link}/TAGS/{tagID}.json", data=json.dumps(DADOS1))
 
-        req = requests.put(f"{link}/TAGS/{tagID}/PROCESSO/3.json", data=json.dumps(DADOS2))
+
+async def obter_localizacao():
+    try:
+        geolocator = Geolocator()
+        geolocator.desired_accuracy = PositionAccuracy.HIGH
+    
+        print("Obtendo Geolocalização...")
+    
+        posicao = await geolocator.get_geoposition_async()
+    
+        coordenadas = posicao.coordinate
+        ponto = coordenadas.point.position
+    
+        latitude = ponto.latitude
+        longitude = ponto.longitude
+
+        localizacao = str(latitude) + ";" + str(longitude)
+
+        print("Localização Encontrada...")
+
+        return localizacao
+    
+    except Exception as erro:
+        print("Não foi possível obter a localização.")
+        print("Detalhes:", repr(erro))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
